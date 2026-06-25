@@ -1224,6 +1224,7 @@ def skill_view(
                     "templates": [],
                     "assets": [],
                     "scripts": [],
+                    "prompts": [],
                     "other": [],
                 }
 
@@ -1239,6 +1240,8 @@ def skill_view(
                             available_files["assets"].append(rel)
                         elif rel.startswith("scripts/"):
                             available_files["scripts"].append(rel)
+                        elif rel.startswith("prompts/"):
+                            available_files["prompts"].append(rel)
                         elif f.suffix in {
                             ".md",
                             ".py",
@@ -1298,6 +1301,7 @@ def skill_view(
         template_files = []
         asset_files = []
         script_files = []
+        prompt_files = []
 
         if skill_dir:
             references_dir = skill_dir / "references"
@@ -1338,6 +1342,12 @@ def skill_view(
                         [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
                     )
 
+            prompts_dir = skill_dir / "prompts"
+            if prompts_dir.exists():
+                prompt_files = [
+                    str(f.relative_to(skill_dir)) for f in prompts_dir.glob("*.md")
+                ]
+
         # Read tags/related_skills with backward compat:
         # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
         hermes_meta = {}
@@ -1349,6 +1359,14 @@ def skill_view(
         related_skills = _parse_tags(
             hermes_meta.get("related_skills") or frontmatter.get("related_skills", "")
         )
+        # Hard dependencies: skills that MUST be loaded alongside this one.
+        # Unlike related_skills (soft reference), required_skills means the
+        # Agent should auto-load these dependencies.  Depth is limited to 1
+        # level to prevent transitive chains from exploding context.
+        required_skills_raw = hermes_meta.get("required_skills", [])
+        if isinstance(required_skills_raw, str):
+            required_skills_raw = [required_skills_raw]
+        required_skills = list(required_skills_raw) if isinstance(required_skills_raw, list) else []
 
         # Build linked files structure for clear discovery
         linked_files = {}
@@ -1360,6 +1378,8 @@ def skill_view(
             linked_files["assets"] = asset_files
         if script_files:
             linked_files["scripts"] = script_files
+        if prompt_files:
+            linked_files["prompts"] = prompt_files
 
         try:
             rel_path = str(skill_md.relative_to(SKILLS_DIR))
@@ -1456,6 +1476,7 @@ def skill_view(
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
+            "required_skills": required_skills,
             "content": rendered_content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,

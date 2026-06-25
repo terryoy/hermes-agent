@@ -1170,6 +1170,18 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Extract hard dependency list from metadata.hermes.required_skills.
+    # Unlike related_skills (shown to Agent as soft hints), required_skills
+    # means the Agent MUST load these skills alongside this one.
+    metadata = frontmatter.get("metadata", {})
+    hermes_meta = {}
+    if isinstance(metadata, dict):
+        hermes_meta = metadata.get("hermes", {}) or {}
+    required_skills_raw = hermes_meta.get("required_skills", [])
+    if isinstance(required_skills_raw, str):
+        required_skills_raw = [required_skills_raw]
+    required_skills = list(dict.fromkeys(required_skills_raw)) if isinstance(required_skills_raw, list) else []
+
     return {
         "skill_name": skill_name,
         "category": category,
@@ -1177,6 +1189,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "required_skills": required_skills,
     }
 
 
@@ -1301,6 +1314,7 @@ def build_skills_system_prompt(
     snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    skill_deps: dict[str, list[str]] = {}  # skill_name → required_skills
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
@@ -1325,6 +1339,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
             )
+            req_deps = entry.get("required_skills", [])
+            if req_deps:
+                skill_deps[frontmatter_name] = req_deps
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1350,6 +1367,9 @@ def build_skills_system_prompt(
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
             )
+            req_deps = entry.get("required_skills", [])
+            if req_deps:
+                skill_deps[entry["frontmatter_name"]] = req_deps
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1406,6 +1426,9 @@ def build_skills_system_prompt(
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
                 )
+                req_deps = entry.get("required_skills", [])
+                if req_deps:
+                    skill_deps[frontmatter_name] = req_deps
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1465,6 +1488,10 @@ def build_skills_system_prompt(
                 if name in seen:
                     continue
                 seen.add(name)
+                # Annotate hard dependencies inline
+                if name in skill_deps:
+                    deps = ", ".join(skill_deps[name])
+                    desc = f"{desc} [requires: {deps}]" if desc else f"[requires: {deps}]"
                 if desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
@@ -1482,6 +1509,9 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "If a skill lists [requires: ...] dependencies, you MUST also load those required "
+            "skills with skill_view() — they are hard dependencies, not suggestions. "
+            "Skills that list [requires: ...] won't work correctly without their dependencies.\n"
             "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
             "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
