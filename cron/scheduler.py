@@ -5463,6 +5463,18 @@ def run_job(
             _mt = _cfg.get("max_turns")
         max_iterations = _resolve_turn_limit(_mt)
 
+        # Fork customization: allow individual cron jobs to set a tighter per-job
+        # iteration budget (job["max_iterations"]) while preserving the global
+        # agent.max_turns default for all existing jobs. This lets report/trader
+        # jobs pin a low limit even though the global default may be high.
+        _job_max_iterations = job.get("max_iterations")
+        if _job_max_iterations is not None:
+            try:
+                max_iterations = max(1, int(_job_max_iterations))
+            except (TypeError, ValueError):
+                logger.warning("Job '%s': invalid max_iterations=%r; using global default", job_id, _job_max_iterations)
+                # keep the resolve_turn_limit() result above
+
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
 
@@ -6080,7 +6092,28 @@ def run_job(
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
-        logger.exception("Job '%s' failed: %s", job_name, error_msg)
+
+        # Fork customization: append model/provider/base_url context to the
+        # failure message so it's immediately clear which model/provider
+        # backend failed. All reads are guarded so an earlier exception never
+        # triggers a NameError here.
+        _run_ctx = ""
+        try:
+            _m_model = str(locals().get("model") or "")
+            _m_prov = (locals().get("runtime") or {}).get("provider") or ""
+            _m_base = (locals().get("runtime") or {}).get("base_url") or ""
+            if _m_prov or _m_base:
+                _run_ctx = (
+                    " | model=" + (_m_model or "default")
+                    + " | provider=" + (_m_prov or "N/A")
+                    + " | base_url=" + (_m_base or "N/A")
+                )
+        except Exception:
+            _run_ctx = ""
+            _m_model, _m_prov = "", ""
+        error_msg_full = error_msg + _run_ctx
+
+        logger.exception("Job '%s' failed: %s", job_name, error_msg_full)
         # Best-effort audit write on failure path. _audit_fire_id
         # may be unset if the exception fired before submit() — guard
         # with a None check so the audit write itself never raises.
@@ -6097,14 +6130,16 @@ def run_job(
                 "deliver_target": job.get("deliver"),
                 "model": model or None,
                 "duration_ms": _audit_duration_ms,
-                "error": error_msg,
+                "error": error_msg_full,
             })
-        
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Model:** {_m_model or 'default'}
+**Provider:** {_m_prov or 'N/A'}
 
 ## Prompt
 
@@ -6113,10 +6148,10 @@ def run_job(
 ## Error
 
 ```
-{error_msg}
+{error_msg_full}
 ```
 """
-        return False, output, "", error_msg
+        return False, output, "", error_msg_full
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We

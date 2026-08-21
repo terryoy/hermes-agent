@@ -33,12 +33,17 @@ _workspace_cache: dict = {}
 def normalize_path(path: str) -> str:
     """Normalize a path for use as a stable map key.
 
-    Resolves ``~``, makes absolute, and collapses ``.``/``..``.  We do
-    NOT resolve symlinks here — symlink stability matters for some
-    LSP servers (rust-analyzer cares about Cargo workspace identity)
-    and we want the canonical path the user typed when possible.
+    Resolves ``~``, makes absolute, collapses ``.``/``..``, and resolves
+    symlinks.  The Hermes gateway is multi-session: the same repository can
+    be reached through a symlink (for example ``/root/verne-ai``) or through
+    its real path.  LSP clients are process-wide, so retaining both spellings
+    would incorrectly spawn duplicate language servers for one workspace.
+
+    ``realpath`` is safe here because this function is used for workspace
+    identity and containment checks, not for preserving the path spelling
+    shown to the user.
     """
-    return os.path.abspath(os.path.expanduser(path))
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
 
 
 def find_git_worktree(start: str) -> Optional[str]:
